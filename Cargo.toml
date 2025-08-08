@@ -1,0 +1,13 @@
+[package]
+name = "rustymatch"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust implementation of picomatch/micromatch pattern matching"
+license = "MIT"
+authors = ["Claude Code"]
+
+[lib]
+name = "rustymatch"
+crate-type = ["lib"]
+
+[dependencies]
