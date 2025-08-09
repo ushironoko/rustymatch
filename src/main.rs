@@ -1,14 +1,55 @@
+//! # Satch CLI
+//!
+//! glob pattern matching command-line tool.
+//!
+//! A Rust port of [micromatch](https://github.com/micromatch/micromatch) and
+//! [picomatch](https://github.com/micromatch/picomatch) with a convenient CLI interface.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Test paths from stdin
+//! echo "src/main.rs" | satch --basename "*.rs"   # MATCH
+//!
+//! # List matching files
+//! satch --list --recursive --basename "*.js"     # Find all .js files
+//!
+//! # Test specific paths
+//! satch "*.rs" src/main.rs lib.rs test.js        # Test multiple files
+//! ```
+//!
+//! ## Features
+//!
+//! - **Pattern matching**: Test file paths against glob patterns
+//! - **File listing**: Find files matching patterns in directories
+//! - **Recursive search**: Search through directory trees
+//! - **Basename matching**: Match against filename only, ignoring path
+//! - **Multiple modes**: stdin input, file listing, or direct path testing
+//!
+//! ## Pattern Support
+//!
+//! - Basic wildcards: `*`, `?`
+//! - Globstars: `**` for recursive directory matching
+//! - Character classes: `[abc]`, `[a-z]`, `[^abc]`
+//! - Complex patterns: `**/test/**/*.js`
+
 use clap::{Arg, Command};
 use satch::is_match;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
+/// Main entry point for the satch CLI tool.
+///
+/// Parses command-line arguments and dispatches to appropriate functionality:
+/// - List mode: Find and list files matching the pattern
+/// - Path testing: Test specific paths against the pattern  
+/// - Stdin mode: Read paths from stdin and test each one
 fn main() {
     let matches = Command::new("satch")
         .version("0.1.0")
         .author("ushironoko")
-        .about("High-performance glob pattern matching CLI tool")
+        .about("glob pattern matching CLI tool")
         .arg(
             Arg::new("pattern")
                 .help("Glob pattern to match against")
@@ -69,6 +110,13 @@ fn main() {
     }
 }
 
+/// Lists files matching the given pattern.
+///
+/// # Arguments
+/// * `pattern` - Glob pattern to match against
+/// * `recursive` - If true, search recursively through directories
+/// * `verbose` - If true, show verbose output including non-matches
+/// * `basename_mode` - If true, match against filename only (ignore directory path)
 fn list_matching_files(pattern: &str, recursive: bool, verbose: bool, basename_mode: bool) {
     if recursive {
         list_files_recursive(".", pattern, verbose, basename_mode);
@@ -153,6 +201,13 @@ fn visit_dir(dir: &Path, pattern: &str, verbose: bool, basename_mode: bool) -> i
     Ok(())
 }
 
+/// Tests a single path against the given pattern and prints the result.
+///
+/// # Arguments
+/// * `pattern` - Glob pattern to match against
+/// * `path` - File path to test
+/// * `verbose` - If true, show detailed matching information
+/// * `basename_mode` - If true, match against filename only (ignore directory path)
 fn check_path_match(pattern: &str, path: &str, verbose: bool, basename_mode: bool) {
     let test_path = if basename_mode {
         Path::new(path)
@@ -178,6 +233,12 @@ fn check_path_match(pattern: &str, path: &str, verbose: bool, basename_mode: boo
     }
 }
 
+/// Reads file paths from stdin and tests each one against the pattern.
+///
+/// # Arguments
+/// * `pattern` - Glob pattern to match against
+/// * `verbose` - If true, show detailed matching information
+/// * `basename_mode` - If true, match against filename only (ignore directory path)
 fn read_from_stdin(pattern: &str, verbose: bool, basename_mode: bool) {
     let stdin = io::stdin();
     let reader = BufReader::new(stdin);
