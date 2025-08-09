@@ -2,12 +2,22 @@
 name = "satch"
 version = "0.1.0"
 edition = "2021"
-description = "A Rust implementation of picomatch/micromatch pattern matching"
+description = "A high-performance Rust implementation of picomatch/micromatch pattern matching"
 license = "MIT"
 authors = ["ushironoko"]
+repository = "https://github.com/ushironoko/satch"
+homepage = "https://github.com/ushironoko/satch"
+readme = "README.md"
+keywords = ["glob", "pattern", "matching", "micromatch", "picomatch"]
+categories = ["filesystem", "text-processing", "command-line-utilities"]
+
+[[bin]]
+name = "satch"
+path = "src/main.rs"
 
 [lib]
 name = "satch"
 crate-type = ["lib"]
 
 [dependencies]
+clap = { version = "4.5.16", features = ["derive"] }
