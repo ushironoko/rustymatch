@@ -1,3 +1,11 @@
+#[derive(Debug, Clone, PartialEq)]
+enum GlobSegment {
+    Literal(String),
+    Wildcard,
+    Globstar,
+    CharClass(String),
+}
+
 pub fn is_match(input: &str, pattern: &str) -> bool {
     let input_chars: Vec<char> = input.chars().collect();
     let pattern_chars: Vec<char> = pattern.chars().collect();
@@ -14,6 +22,12 @@ pub fn is_match(input: &str, pattern: &str) -> bool {
         && input_chars[0] == '.'
     {
         return false;
+    }
+
+    // 複雑なglobstarパターンの場合は新しいアルゴリズムを使用
+    if has_multiple_globstars(&pattern_chars) {
+        let segments = parse_glob_segments(&pattern_chars);
+        return match_with_segments(input, &segments);
     }
 
     match_pattern(input_chars, pattern_chars, 0, 0)
@@ -114,7 +128,11 @@ fn match_globstar(input: Vec<char>, pattern: Vec<char>, input_idx: usize, patter
     if has_slash_after_globstar {
         // 0文字マッチを試す（**が空文字にマッチする場合）- ただし後に/がある場合は制限的
         // src/**/*.jsのような場合、src/main.jsはマッチしないべき（中間ディレクトリが必要）
-        if !needs_intermediate_directory(&pattern, pattern_idx, next_pattern_idx) {
+        // しかし src/**/main.js の場合、src/main.js はマッチするべき
+        // test/**/*.js の場合、test/main.test.js もマッチするべき
+        let should_require_intermediate = needs_intermediate_directory(&pattern, pattern_idx, next_pattern_idx) 
+            && has_multiple_path_components_after_globstar(&pattern, next_pattern_idx);
+        if !should_require_intermediate {
             if match_pattern(input.clone(), pattern.clone(), input_idx, next_pattern_idx) {
                 return true;
             }
@@ -149,9 +167,223 @@ fn match_globstar(input: Vec<char>, pattern: Vec<char>, input_idx: usize, patter
 
 fn needs_intermediate_directory(pattern: &Vec<char>, globstar_start: usize, next_idx: usize) -> bool {
     // **の前と後両方にパターンがある場合、中間ディレクトリが必要
-    let has_prefix = globstar_start > 0 && pattern.get(globstar_start.saturating_sub(1)) == Some(&'/');
+    // globstar_start は **の後の位置を指すので、実際の**の開始位置は globstar_start - 2
+    let actual_globstar_start = globstar_start.saturating_sub(2);
+    let has_prefix = actual_globstar_start > 0 && pattern.get(actual_globstar_start.saturating_sub(1)) == Some(&'/');
     let has_suffix = next_idx < pattern.len();
+    
     has_prefix && has_suffix
+}
+
+fn has_multiple_path_components_after_globstar(pattern: &Vec<char>, next_idx: usize) -> bool {
+    // **/ の後に複数のパス要素があるかチェック
+    // 例：**/*.js は1つのパス要素だが、prefix/**/*.js の形では中間ディレクトリが必要
+    // この関数は、パターンが "prefix/**/*.ext" の形かどうかを判定する
+    
+    if next_idx >= pattern.len() {
+        return false;
+    }
+    
+    let remaining: String = pattern[next_idx..].iter().collect();
+    
+    // パターンが "*.ext" の形（ワイルドカード + 拡張子）で始まる場合
+    // この場合、prefixがある場合は中間ディレクトリが必要
+    remaining.starts_with('*') && remaining.contains('.')
+}
+
+fn has_multiple_globstars(pattern: &[char]) -> bool {
+    let mut globstar_count = 0;
+    let mut i = 0;
+    while i + 1 < pattern.len() {
+        if pattern[i] == '*' && pattern[i + 1] == '*' {
+            globstar_count += 1;
+            i += 2; // **をスキップ
+            if globstar_count > 1 {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+fn parse_glob_segments(pattern: &[char]) -> Vec<GlobSegment> {
+    let mut segments = Vec::new();
+    let mut i = 0;
+    let mut current_literal = String::new();
+
+    while i < pattern.len() {
+        match pattern[i] {
+            '*' if i + 1 < pattern.len() && pattern[i + 1] == '*' => {
+                // Globstar (**) の処理
+                if !current_literal.is_empty() {
+                    segments.push(GlobSegment::Literal(current_literal.clone()));
+                    current_literal.clear();
+                }
+                segments.push(GlobSegment::Globstar);
+                i += 2;
+                // ** の後の / をスキップ
+                if i < pattern.len() && pattern[i] == '/' {
+                    i += 1;
+                }
+            }
+            '*' => {
+                // 単一のワイルドカード
+                if !current_literal.is_empty() {
+                    segments.push(GlobSegment::Literal(current_literal.clone()));
+                    current_literal.clear();
+                }
+                segments.push(GlobSegment::Wildcard);
+                i += 1;
+            }
+            '[' => {
+                // 文字クラスの処理
+                if !current_literal.is_empty() {
+                    segments.push(GlobSegment::Literal(current_literal.clone()));
+                    current_literal.clear();
+                }
+                
+                let mut class_content = String::new();
+                let mut j = i;
+                while j < pattern.len() {
+                    class_content.push(pattern[j]);
+                    if j > i && pattern[j] == ']' {
+                        break;
+                    }
+                    j += 1;
+                }
+                segments.push(GlobSegment::CharClass(class_content));
+                i = j + 1;
+            }
+            ch => {
+                current_literal.push(ch);
+                i += 1;
+            }
+        }
+    }
+
+    if !current_literal.is_empty() {
+        segments.push(GlobSegment::Literal(current_literal));
+    }
+
+    segments
+}
+
+use std::collections::HashMap;
+
+type MemoKey = (usize, usize); // (input_idx, segment_idx)
+type MemoCache = HashMap<MemoKey, bool>;
+
+fn match_with_segments(input: &str, segments: &[GlobSegment]) -> bool {
+    let mut memo = MemoCache::new();
+    let input_chars: Vec<char> = input.chars().collect();
+    match_segments_with_memo(&input_chars, 0, segments, 0, &mut memo)
+}
+
+fn match_segments_with_memo(
+    input_chars: &[char], 
+    input_idx: usize, 
+    segments: &[GlobSegment], 
+    segment_idx: usize, 
+    memo: &mut MemoCache
+) -> bool {
+    let key = (input_idx, segment_idx);
+    
+    // メモ化されている場合は結果を返す
+    if let Some(&result) = memo.get(&key) {
+        return result;
+    }
+    
+    let result = match_segments_recursive_optimized(input_chars, input_idx, segments, segment_idx, memo);
+    memo.insert(key, result);
+    result
+}
+
+fn match_segments_recursive_optimized(
+    input_chars: &[char], 
+    input_idx: usize, 
+    segments: &[GlobSegment], 
+    segment_idx: usize, 
+    memo: &mut MemoCache
+) -> bool {
+    // 全セグメントを処理した場合
+    if segment_idx >= segments.len() {
+        return input_idx >= input_chars.len();
+    }
+
+    // 入力が終了した場合
+    if input_idx >= input_chars.len() {
+        // 残りのセグメントが全てGlobstarであれば一致
+        return segments[segment_idx..].iter().all(|seg| matches!(seg, GlobSegment::Globstar));
+    }
+
+    match &segments[segment_idx] {
+        GlobSegment::Literal(lit) => {
+            let lit_chars: Vec<char> = lit.chars().collect();
+            if input_idx + lit_chars.len() <= input_chars.len() 
+                && input_chars[input_idx..input_idx + lit_chars.len()] == lit_chars {
+                match_segments_with_memo(input_chars, input_idx + lit_chars.len(), segments, segment_idx + 1, memo)
+            } else {
+                false
+            }
+        }
+        GlobSegment::Wildcard => {
+            // * は / 以外の文字を1文字以上マッチ
+            // 0文字マッチは許可しない（元の実装に合わせて）
+            for i in input_idx..input_chars.len() {
+                if input_chars[i] == '/' {
+                    break;
+                }
+                if match_segments_with_memo(input_chars, i + 1, segments, segment_idx + 1, memo) {
+                    return true;
+                }
+            }
+            false
+        }
+        GlobSegment::Globstar => {
+            // ** は任意の長さのパスにマッチ
+            // 0文字マッチを試す
+            if match_segments_with_memo(input_chars, input_idx, segments, segment_idx + 1, memo) {
+                return true;
+            }
+
+            // 1文字以上マッチを試す
+            for i in input_idx..input_chars.len() {
+                if match_segments_with_memo(input_chars, i + 1, segments, segment_idx + 1, memo) {
+                    return true;
+                }
+            }
+            false
+        }
+        GlobSegment::CharClass(class) => {
+            if input_idx < input_chars.len() {
+                let ch = input_chars[input_idx];
+                if matches_char_class(ch, class) {
+                    match_segments_with_memo(input_chars, input_idx + 1, segments, segment_idx + 1, memo)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn matches_char_class(ch: char, class: &str) -> bool {
+    // 簡単な文字クラス実装（既存のmatch_character_class関数を流用可能）
+    let chars: Vec<char> = class.chars().collect();
+    if chars.len() < 3 || chars[0] != '[' || chars[chars.len() - 1] != ']' {
+        return false;
+    }
+    
+    let content = &chars[1..chars.len() - 1];
+    let is_negated = !content.is_empty() && content[0] == '^';
+    let actual_content = if is_negated { &content[1..] } else { content };
+    
+    let matches = is_char_in_class(ch, actual_content);
+    if is_negated { !matches } else { matches }
 }
 
 fn match_character_class(input: Vec<char>, pattern: Vec<char>, input_idx: usize, pattern_idx: usize) -> bool {
@@ -208,7 +440,8 @@ fn match_character_class(input: Vec<char>, pattern: Vec<char>, input_idx: usize,
 fn is_char_in_class(input_char: char, class_content: &[char]) -> bool {
     let mut i = 0;
     while i < class_content.len() {
-        if i + 2 < class_content.len() && class_content[i + 1] == '-' {
+        // 範囲指定かどうかをチェック: 現在位置+2が範囲内で、+1の位置が'-'
+        if i + 1 < class_content.len() && i + 2 < class_content.len() && class_content[i + 1] == '-' {
             // 範囲指定（例: a-z）
             let start = class_content[i];
             let end = class_content[i + 2];
@@ -383,20 +616,12 @@ mod tests {
         assert!(is_match("a*b", "a*b"));
     }
 
-    #[test]
-    fn debug_asterisk_issue() {
-        // デバッグ用テスト
-        println!("Testing '*' vs '**'");
-        let result = is_match("*", "**");
-        println!("Result: {}", result);
-        // 一時的に通すテスト
-        assert!(true);
-    }
 
     #[test]
     fn test_placeholder() {
         assert!(!is_match("test", "pattern"));
     }
+    
 
     // 7. globstar（**）パターンのテスト
     #[test]
@@ -463,6 +688,7 @@ mod tests {
             "src/lib/test/spec/main.test.js",
             "**/test/**/*.js"
         ));
+        
         assert!(is_match(
             "project/src/lib/test/main.test.js",
             "**/test/**/*.js"
@@ -604,8 +830,8 @@ mod tests {
         assert!(!is_match("file@", "file[0-9a-zA-Z]"));
         
         // 変数名のようなパターン
-        assert!(is_match("var1", "[a-zA-Z][a-zA-Z0-9]"));
-        assert!(is_match("Var2", "[a-zA-Z][a-zA-Z0-9]"));
+        assert!(is_match("var1", "[a-zA-Z][a-zA-Z0-9]*"));
+        assert!(is_match("Var2", "[a-zA-Z][a-zA-Z0-9]*"));
         assert!(!is_match("1var", "[a-zA-Z][a-zA-Z0-9]")); // 数字で始まる
     }
 
@@ -633,7 +859,7 @@ mod tests {
     #[test]
     fn test_negated_class_in_patterns() {
         // 否定文字クラスを含むパターン
-        assert!(is_match("test1.log", "test[^0-9].log")); // 数字以外
+        assert!(is_match("testa.log", "test[^0-9].log")); // 数字以外
         assert!(!is_match("test5.log", "test[^0-9].log"));
         
         // 複数の否定クラス
@@ -719,5 +945,44 @@ mod tests {
         
         // 範囲が逆転している場合（z-a）は実装依存
         // 通常は無効な範囲として扱われる
+    }
+
+    // パフォーマンステスト
+    #[test]
+    fn test_performance_complex_globstar() {
+        use std::time::Instant;
+        
+        let patterns = vec![
+            "**/test/**/*.js",
+            "src/**/*.rs",
+            "**/lib/**/utils/**/*.ts",
+            "**/**/nested/**/**/deep/**/*.txt",
+        ];
+        
+        let inputs = vec![
+            "project/src/lib/test/main.test.js",
+            "deep/nested/src/main.rs",
+            "complex/lib/utils/helper.ts",
+            "very/deeply/nested/path/to/deep/file.txt",
+        ];
+        
+        let start = Instant::now();
+        
+        // 複数のパターンとファイルパスでマッチングを実行
+        for _ in 0..1000 {
+            for pattern in &patterns {
+                for input in &inputs {
+                    is_match(input, pattern);
+                }
+            }
+        }
+        
+        let duration = start.elapsed();
+        
+        // 4000回のマッチング操作（1000 * 4 patterns * 1 inputs）が1秒以内で完了することを確認
+        assert!(duration.as_secs() < 1, "Performance test took too long: {:?}", duration);
+        
+        println!("Performance test completed in {:?}", duration);
+        println!("Average per match: {:?}", duration / 4000);
     }
 }
