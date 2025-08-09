@@ -1,29 +1,107 @@
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
 use satch::is_match;
 
-/// Generate test file paths for benchmarking
-fn generate_test_paths(count: usize) -> Vec<String> {
+/// Generate edge case patterns and paths for testing
+fn generate_edge_cases() -> Vec<(String, Vec<String>)> {
+    vec![
+        // Very long paths
+        ("**/*.js".to_string(), vec![
+            "a/very/deeply/nested/directory/structure/with/many/many/levels/that/goes/on/and/on/and/continues/for/a/very/long/time/until/finally/reaching/the/file.js".to_string(),
+            format!("{}/file.js", "deeply/nested/".repeat(50)),
+        ]),
+        
+        // Patterns with many alternatives
+        ("**/*.{js,ts,jsx,tsx,vue,svelte,astro,md,mdx,json,yaml,yml,toml,xml,html,htm,css,scss,sass,less,styl}".to_string(), vec![
+            "src/component.jsx".to_string(),
+            "docs/readme.md".to_string(),
+            "config/settings.toml".to_string(),
+            "styles/main.scss".to_string(),
+        ]),
+        
+        // Complex character classes
+        ("[a-zA-Z0-9._-]*[!@#$%^&*()+={}\\[\\]:;\"'<>,.?/~`|\\\\]*".to_string(), vec![
+            "normal_file.txt".to_string(),
+            "file-with-special!@#.txt".to_string(),
+            "MixedCase123.txt".to_string(),
+        ]),
+        
+        // Multiple consecutive globstars
+        ("**/**/test/**/**/*.spec.js".to_string(), vec![
+            "src/components/test/button.spec.js".to_string(),
+            "lib/utils/test/helper.spec.js".to_string(),
+            "deep/nested/test/integration/api.spec.js".to_string(),
+        ]),
+        
+        // Empty and single character cases
+        ("*".to_string(), vec![
+            "".to_string(),
+            "a".to_string(),
+            "ab".to_string(),
+        ]),
+        
+        // Unicode and special characters
+        ("**/*日本語*.txt".to_string(), vec![
+            "docs/日本語ファイル.txt".to_string(),
+            "src/日本語test.txt".to_string(),
+            "english.txt".to_string(),
+        ]),
+        
+        // Pathological cases that might cause performance issues
+        ("a*a*a*a*a*a*a*a*a*a*".to_string(), vec![
+            "aaaaaaaaaa".to_string(),
+            "abacadaeafagahaiajakal".to_string(),
+            "bbbbbbbbb".to_string(),
+        ]),
+    ]
+}
+
+/// Generate realistic project structures for testing
+fn generate_realistic_project_paths(count: usize) -> Vec<String> {
     let mut rng = thread_rng();
-    let mut paths = Vec::with_capacity(count);
+    let mut paths = Vec::new();
     
-    let extensions = ["js", "ts", "rs", "txt", "json", "md", "css", "html"];
-    let dirs = ["src", "lib", "test", "docs", "examples", "assets", "components"];
-    let files = ["main", "index", "utils", "helper", "config", "types", "data"];
+    // Common project structure patterns
+    let frameworks = ["react", "vue", "angular", "svelte"];
+    let dirs = ["src", "lib", "components", "pages", "utils", "hooks", "stores", "types"];
+    let test_dirs = ["__tests__", "test", "spec", "e2e"];
+    let file_types = [
+        ("ts", 0.3), ("js", 0.25), ("tsx", 0.15), ("jsx", 0.1),
+        ("json", 0.05), ("md", 0.03), ("css", 0.05), ("scss", 0.02),
+        ("test.ts", 0.03), ("spec.js", 0.02)
+    ];
     
     for _ in 0..count {
-        let depth = rng.gen_range(1..=5);
-        let mut path_parts = Vec::new();
+        let framework = frameworks[rng.gen_range(0..frameworks.len())];
+        let depth = rng.gen_range(1..8);
+        let mut path_parts = vec![framework];
         
-        // Add random directories
-        for _ in 0..depth - 1 {
-            path_parts.push(dirs[rng.gen_range(0..dirs.len())].to_string());
+        // Build directory structure
+        for _ in 0..depth {
+            if rng.gen_bool(0.2) {
+                // Add test directory
+                path_parts.push(test_dirs[rng.gen_range(0..test_dirs.len())]);
+            } else {
+                // Add regular directory
+                path_parts.push(dirs[rng.gen_range(0..dirs.len())]);
+            }
         }
         
         // Add filename
-        let file = files[rng.gen_range(0..files.len())];
-        let ext = extensions[rng.gen_range(0..extensions.len())];
-        path_parts.push(format!("{}.{}", file, ext));
+        let mut cumulative = 0.0;
+        let rand_val: f64 = rng.gen();
+        
+        let mut selected_ext = file_types[0].0;
+        for (ext, prob) in &file_types {
+            cumulative += prob;
+            if rand_val <= cumulative {
+                selected_ext = ext;
+                break;
+            }
+        }
+        
+        let filename = format!("component.{}", selected_ext);
+        path_parts.push(&filename);
         
         paths.push(path_parts.join("/"));
     }
@@ -31,74 +109,17 @@ fn generate_test_paths(count: usize) -> Vec<String> {
     paths
 }
 
-/// Generate specific test cases for different pattern types
-fn generate_specific_test_cases() -> Vec<(String, Vec<String>)> {
-    vec![
-        // Basic patterns
-        ("*.js".to_string(), vec![
-            "main.js".to_string(),
-            "index.js".to_string(),
-            "src/main.js".to_string(),
-            "test.ts".to_string(),
-            "file.txt".to_string(),
-        ]),
-        
-        // Globstar patterns
-        ("**/*.js".to_string(), vec![
-            "main.js".to_string(),
-            "src/main.js".to_string(),
-            "src/lib/utils.js".to_string(),
-            "deep/nested/path/file.js".to_string(),
-            "main.ts".to_string(),
-        ]),
-        
-        // Complex globstar
-        ("**/test/**/*.js".to_string(), vec![
-            "test/main.js".to_string(),
-            "src/test/unit/helper.js".to_string(),
-            "lib/test/integration/api.js".to_string(),
-            "src/main.js".to_string(),
-            "test.js".to_string(),
-        ]),
-        
-        // Character classes
-        ("test[0-9].js".to_string(), vec![
-            "test1.js".to_string(),
-            "test5.js".to_string(),
-            "test9.js".to_string(),
-            "testa.js".to_string(),
-            "test10.js".to_string(),
-        ]),
-        
-        // Range patterns
-        ("[a-z]*.txt".to_string(), vec![
-            "readme.txt".to_string(),
-            "file.txt".to_string(),
-            "data.txt".to_string(),
-            "README.txt".to_string(),
-            "123.txt".to_string(),
-        ]),
-        
-        // Complex nested patterns
-        ("src/**/*.{js,ts,rs}".to_string(), vec![
-            "src/main.js".to_string(),
-            "src/types.ts".to_string(),
-            "src/lib/utils.rs".to_string(),
-            "src/deep/nested/file.js".to_string(),
-            "src/main.txt".to_string(),
-        ]),
-    ]
-}
-
-fn bench_basic_patterns(c: &mut Criterion) {
-    let test_cases = generate_specific_test_cases();
+/// Benchmark edge cases
+fn bench_edge_cases(c: &mut Criterion) {
+    let edge_cases = generate_edge_cases();
     
-    let mut group = c.benchmark_group("basic_patterns");
+    let mut group = c.benchmark_group("edge_cases");
+    group.sample_size(50); // Fewer samples for potentially slow edge cases
     
-    for (pattern, paths) in test_cases {
+    for (pattern, test_paths) in edge_cases {
         group.bench_with_input(
-            BenchmarkId::new("satch", &pattern),
-            &(pattern.clone(), paths.clone()),
+            BenchmarkId::new("satch_edge", &pattern),
+            &(pattern.clone(), test_paths.clone()),
             |b, (pattern, paths)| {
                 b.iter(|| {
                     for path in paths {
@@ -112,26 +133,34 @@ fn bench_basic_patterns(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_large_dataset(c: &mut Criterion) {
-    let sizes = [100, 1000, 5000, 10000];
+/// Benchmark with statistical rigor
+fn bench_statistical_analysis(c: &mut Criterion) {
     let patterns = ["*.js", "**/*.js", "**/test/**/*.js", "[a-z]*.txt"];
+    let path_counts = [100, 500, 1000];
     
-    let mut group = c.benchmark_group("large_dataset");
+    let mut group = c.benchmark_group("statistical_analysis");
+    group.sample_size(200); // More samples for better statistics
+    group.measurement_time(std::time::Duration::from_secs(10));
     
-    for &size in &sizes {
-        let paths = generate_test_paths(size);
-        
-        for &pattern in &patterns {
+    for &pattern in &patterns {
+        for &count in &path_counts {
+            let paths = generate_realistic_project_paths(count);
+            
+            group.throughput(Throughput::Elements(count as u64));
             group.bench_with_input(
-                BenchmarkId::new(format!("satch_{}paths", size), pattern),
+                BenchmarkId::new(format!("satch_rigorous_{}", count), pattern),
                 &(pattern, &paths),
                 |b, (pattern, paths)| {
                     b.iter_batched(
-                        || paths.clone(),
+                        || (*paths).clone(),
                         |paths| {
+                            let mut matches = 0u32;
                             for path in paths {
-                                black_box(is_match(black_box(&path), black_box(pattern)));
+                                if is_match(black_box(&path), black_box(pattern)) {
+                                    matches += 1;
+                                }
                             }
+                            black_box(matches)
                         },
                         BatchSize::SmallInput,
                     );
@@ -143,46 +172,29 @@ fn bench_large_dataset(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_complex_patterns(c: &mut Criterion) {
-    let complex_patterns = vec![
-        ("**/node_modules/**/*.js", vec![
-            "node_modules/package/index.js",
-            "src/node_modules/lib/util.js",
-            "deep/node_modules/test/spec.js",
-            "node_modules/package/lib/deep/file.js",
-        ]),
-        ("src/**/test/**/*.{spec,test}.{js,ts}", vec![
-            "src/components/test/button.spec.js",
-            "src/lib/test/utils.test.ts",
-            "src/deep/nested/test/integration.spec.js",
-            "src/main.js",
-        ]),
-        ("**/{test,spec,__tests__}/**/*.{js,ts,jsx,tsx}", vec![
-            "test/unit/helper.js",
-            "spec/integration/api.ts",
-            "__tests__/components/button.jsx",
-            "src/test/utils.tsx",
-            "main.js",
-        ]),
+/// Benchmark pattern compilation separately (simulation)
+fn bench_pattern_compilation(c: &mut Criterion) {
+    let complex_patterns = [
+        "*.js",
+        "**/*.js",
+        "**/test/**/*.js",
+        "**/*.{js,ts,jsx,tsx}",
+        "**/node_modules/**/*.js",
+        "src/**/test/**/*.{spec,test}.{js,ts}",
+        "**/{test,spec,__tests__}/**/*.{js,ts,jsx,tsx}",
     ];
     
-    let mut group = c.benchmark_group("complex_patterns");
+    let mut group = c.benchmark_group("pattern_compilation");
     
-    for (pattern, test_paths) in complex_patterns {
-        // Expand test paths to larger set
-        let mut paths = Vec::new();
-        for _ in 0..1000 {
-            paths.extend(test_paths.iter().map(|s| s.to_string()));
-        }
-        
-        group.bench_with_input(
-            BenchmarkId::new("satch_complex", pattern),
-            &(pattern, paths),
-            |b, (pattern, paths)| {
+    // Note: Satch doesn't have explicit compilation phase like picomatch,
+    // but we can measure the first-time pattern parsing overhead
+    for pattern in &complex_patterns {
+        group.bench_function(
+            BenchmarkId::new("satch_first_parse", pattern),
+            |b| {
                 b.iter(|| {
-                    for path in paths {
-                        black_box(is_match(black_box(path), black_box(pattern)));
-                    }
+                    // Simulate first-time parsing by testing against a simple path
+                    black_box(is_match(black_box("test.js"), black_box(pattern)))
                 });
             },
         );
@@ -191,32 +203,113 @@ fn bench_complex_patterns(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_memory_intensive(c: &mut Criterion) {
-    let mut group = c.benchmark_group("memory_intensive");
-    
-    // Test with very long paths and complex patterns
-    let long_paths: Vec<String> = (0..100).map(|i| {
-        format!("very/deep/nested/directory/structure/with/many/levels/and/subdirectories/level{}/sublevel/file{}.js", i, i)
+/// Benchmark memory allocation patterns
+fn bench_memory_patterns(c: &mut Criterion) {
+    let long_paths: Vec<String> = (0..1000).map(|i| {
+        format!("very/long/path/with/many/segments/{}/level{}/sublevel/file{}.js", 
+                "segment".repeat(10), i, i)
     }).collect();
     
-    let complex_pattern = "**/deep/**/structure/**/many/**/level*/**/file*.js";
+    let mut group = c.benchmark_group("memory_patterns");
     
-    group.bench_function("satch_long_paths", |b| {
-        b.iter(|| {
-            for path in &long_paths {
-                black_box(is_match(black_box(path), black_box(complex_pattern)));
-            }
-        });
-    });
+    let patterns = ["**/*.js", "**/test/**/*.js", "**/*level*/**/*.js"];
+    
+    for pattern in &patterns {
+        group.bench_with_input(
+            BenchmarkId::new("satch_memory_intensive", pattern),
+            &(pattern, &long_paths),
+            |b, (pattern, paths)| {
+                b.iter(|| {
+                    let mut total_matches = 0u32;
+                    for path in paths.iter() {
+                        if is_match(black_box(path), black_box(pattern)) {
+                            total_matches += 1;
+                        }
+                    }
+                    black_box(total_matches)
+                });
+            },
+        );
+    }
+    
+    group.finish();
+}
+
+/// Benchmark with different input characteristics
+fn bench_input_characteristics(c: &mut Criterion) {
+    let mut group = c.benchmark_group("input_characteristics");
+    
+    // Short paths vs long paths
+    let short_paths: Vec<String> = (0..1000).map(|i| format!("f{}.js", i)).collect();
+    let long_paths: Vec<String> = (0..1000).map(|i| {
+        format!("{}/file{}.js", "very/deeply/nested/directory/structure".repeat(5), i)
+    }).collect();
+    
+    let pattern = "**/*.js";
+    
+    group.bench_with_input(
+        BenchmarkId::new("satch_short_paths", "1000_paths"),
+        &(pattern, &short_paths),
+        |b, (pattern, paths)| {
+            b.iter(|| {
+                for path in paths.iter() {
+                    black_box(is_match(black_box(path), black_box(pattern)));
+                }
+            });
+        },
+    );
+    
+    group.bench_with_input(
+        BenchmarkId::new("satch_long_paths", "1000_paths"),
+        &(pattern, &long_paths),
+        |b, (pattern, paths)| {
+            b.iter(|| {
+                for path in paths.iter() {
+                    black_box(is_match(black_box(path), black_box(pattern)));
+                }
+            });
+        },
+    );
+    
+    // High match rate vs low match rate
+    let high_match_paths: Vec<String> = (0..1000).map(|i| format!("src/file{}.js", i)).collect();
+    let low_match_paths: Vec<String> = (0..1000).map(|i| format!("src/file{}.txt", i)).collect();
+    
+    let js_pattern = "**/*.js";
+    
+    group.bench_with_input(
+        BenchmarkId::new("satch_high_match_rate", "90%_matches"),
+        &(js_pattern, &high_match_paths),
+        |b, (pattern, paths)| {
+            b.iter(|| {
+                for path in paths.iter() {
+                    black_box(is_match(black_box(path), black_box(pattern)));
+                }
+            });
+        },
+    );
+    
+    group.bench_with_input(
+        BenchmarkId::new("satch_low_match_rate", "0%_matches"),
+        &(js_pattern, &low_match_paths),
+        |b, (pattern, paths)| {
+            b.iter(|| {
+                for path in paths.iter() {
+                    black_box(is_match(black_box(path), black_box(pattern)));
+                }
+            });
+        },
+    );
     
     group.finish();
 }
 
 criterion_group!(
-    benches,
-    bench_basic_patterns,
-    bench_large_dataset,
-    bench_complex_patterns,
-    bench_memory_intensive
+    improved_benches,
+    bench_edge_cases,
+    bench_statistical_analysis,
+    bench_pattern_compilation,
+    bench_memory_patterns,
+    bench_input_characteristics
 );
-criterion_main!(benches);
+criterion_main!(improved_benches);
