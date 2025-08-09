@@ -1,13 +1,13 @@
 [package]
-name = "rustymatch"
+name = "satch"
 version = "0.1.0"
 edition = "2021"
 description = "A Rust implementation of picomatch/micromatch pattern matching"
 license = "MIT"
-authors = ["Claude Code"]
+authors = ["ushironoko"]
 
 [lib]
-name = "rustymatch"
+name = "satch"
 crate-type = ["lib"]
 
 [dependencies]

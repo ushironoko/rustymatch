@@ -1,3 +1,30 @@
+//! # Satch
+//! 
+//! A Rust implementation of picomatch/micromatch pattern matching.
+//! 
+//! Satch provides fast and accurate glob pattern matching with support for:
+//! - Basic wildcards (`*`, `?`)
+//! - Globstars (`**`) for recursive directory matching
+//! - Character classes (`[abc]`, `[a-z]`, `[^abc]`)
+//! - Complex multi-globstar patterns (`**/test/**/*.js`)
+//! 
+//! ## Performance
+//! 
+//! Satch is optimized for performance with:
+//! - Memoization to avoid redundant calculations
+//! - Zero-copy string processing
+//! - Efficient segment-based pattern parsing
+//! 
+//! ## Examples
+//! 
+//! ```
+//! use satch::is_match;
+//! 
+//! assert!(is_match("src/main.rs", "src/*.rs"));
+//! assert!(is_match("deep/nested/file.js", "**/file.js"));
+//! assert!(is_match("test.js", "[^.]*.js"));
+//! ```
+
 #[derive(Debug, Clone, PartialEq)]
 enum GlobSegment {
     Literal(String),
