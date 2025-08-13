@@ -1,6 +1,6 @@
 # Satch
 
-High-performance glob pattern matching for Rust and CLI.
+Satch is Memory,Complex Glob, and CLI friendly matcher.
 
 ## Install
 
